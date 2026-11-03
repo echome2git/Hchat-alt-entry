@@ -191,4 +191,4 @@ sh ./gradlew :app:assembleRelease --no-daemon --no-watch-fs -x lintVitalAnalyzeR
 
 ## DexKit 常驻内存优化
 
-共享宿主入口使用 `DexKitBridge.createManaged`，真实查询才加载，空闲 30 秒释放；旧查询结果经同一对象按需恢复，不把原 bridge 直接关闭后继续传给功能。APK 内 DEX 读不到锚点 `MicroMsg.MMKernel` 时，同一次打开改用当前 ClassLoader 的内存 dex，命中后该 native 实例保持驻留。实现源码在 `third_party/dexkit-memory/`，仅修改固定上游 76551eb 的 JVM 桥接层，native 库不变。构建跑手 `scripts/build_dexkit_memory_aar.py` 核验旧 API 和 native 校验和；入口及资源回归为 `scripts/run_dex_idle_memory_tests.cjs`，实际 AAR 的 JNI 边界回归为 `scripts/run_dex_bridge_integration_tests.py`。JNI 边界测试不等于手机实测，交付后仍需对比主进程和 :push 的同口径内存。
+共享宿主入口使用 `DexKitBridge.createManaged`，真实查询才加载，空闲 30 秒释放；旧查询结果经同一对象按需恢复，不把原 bridge 直接关闭后继续传给功能。APK 内 DEX 不能同时加载 `MicroMsg.MMKernel` 和 `MicroMsg.SqliteDB` 时，同一次打开改用当前 ClassLoader 的内存 dex，命中后该 native 实例保持驻留。缺少数据库 wrapper 等关键类的定位快照不会写成完整缓存。实现源码在 `third_party/dexkit-memory/`，仅修改固定上游 76551eb 的 JVM 桥接层，native 库不变。构建跑手 `scripts/build_dexkit_memory_aar.py` 核验旧 API 和 native 校验和；入口及资源回归为 `scripts/run_dex_idle_memory_tests.cjs`，实际 AAR 的 JNI 边界回归为 `scripts/run_dex_bridge_integration_tests.py`。JNI 边界测试不等于手机实测，交付后仍需对比主进程和 :push 的同口径内存。

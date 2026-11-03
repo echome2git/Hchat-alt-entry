@@ -1,6 +1,7 @@
 package h.Hchat.dexkit;
 
 import android.os.Bundle;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.database.Cursor;
@@ -26,6 +27,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -42,7 +44,7 @@ public class DexFinder {
     private static final String CACHE_COMPLETE = "cache.complete";
     private static final String CACHE_KEY = "cache.key";
     private static final String CACHE_SNAPSHOT_VERSION_KEY = "cache.snapshot.version";
-    private static final String CACHE_SNAPSHOT_VERSION = "2";
+    private static final String CACHE_SNAPSHOT_VERSION = "3";
     private static final String LOCATOR_WISH_COMPLETE = "locator.wish.complete";
     private static final String LOCATOR_PACKET_COMPLETE = "locator.packet.complete";
     private static final String LOCATOR_ECS_COMPLETE = "locator.ecs.complete";
@@ -60,6 +62,7 @@ public class DexFinder {
     private boolean resolvedAll;
     private boolean cacheLoadAttempted;
     private boolean cacheDescriptorInvalid;
+    private final HashSet<String> loggedLocateFailures = new HashSet<>();
 
     // AddMsg 处理类
     public List<Class<?>> addMsgClasses = new ArrayList<>();
@@ -2537,10 +2540,14 @@ public class DexFinder {
 
     // ============ 数据库/联系人公共 API ============
     public void resolveDatabaseApi() {
-        if (ensureSnapshotLoaded()) return;
+        if (coreStorageGetter != null && sqliteDbWrapperClass != null && configStorageClass != null) return;
+        if (ensureSnapshotLoaded()
+                && coreStorageGetter != null
+                && sqliteDbWrapperClass != null
+                && configStorageClass != null) {
+            return;
+        }
         try {
-            if (coreStorageGetter != null && sqliteDbWrapperClass != null && configStorageClass != null) return;
-
             mmKernelClass = findFirstClassByStrings(
                     "MicroMsg.MMKernel",
                     "Kernel not null, has initialized.");
@@ -2569,16 +2576,19 @@ public class DexFinder {
                     "MicroMsg.ConfigStorage",
                     "shouldProcessEvent db is close :%s");
 
-            sqliteDbWrapperClass = findFirstClassByStrings(
-                    "MicroMsg.SqliteDB",
-                    "sql is null ");
+            sqliteDbWrapperClass = findSqliteWrapperClass();
 
-            logDetail("数据库API: kernel="
+            String detail = "数据库API: kernel="
                     + (mmKernelClass != null ? mmKernelClass.getName() : "null")
                     + " storageGetter=" + (coreStorageGetter != null ? coreStorageGetter.getName() : "null")
                     + " coreStorage=" + (coreStorageClass != null ? coreStorageClass.getName() : "null")
                     + " config=" + (configStorageClass != null ? configStorageClass.getName() : "null")
-                    + " sqlite=" + (sqliteDbWrapperClass != null ? sqliteDbWrapperClass.getName() : "null"));
+                    + " sqlite=" + (sqliteDbWrapperClass != null ? sqliteDbWrapperClass.getName() : "null");
+            if (sqliteDbWrapperClass == null) {
+                h.Hchat.utils.HLog.e(TAG + " " + detail);
+            } else {
+                logDetail(detail);
+            }
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveDatabaseApi 失败: " + e.getMessage(), e);
         }
@@ -3484,7 +3494,7 @@ public class DexFinder {
 
     // ============ DexKit 结果缓存 ============
     private boolean ensureSnapshotLoaded() {
-        if (resolvedAll) return true;
+        if (resolvedAll) return criticalSnapshotReady();
         if (cacheLoadAttempted) return false;
         return loadCache();
     }
@@ -3701,7 +3711,11 @@ public class DexFinder {
             chatPageFragmentEnterMethod = loadMethod("chatPageFragmentEnterMethod");
             chatPageFragmentExitMethod = loadMethod("chatPageFragmentExitMethod");
             chatFooterSendClickMethod = loadMethod("chatFooterSendClickMethod");
-            return !cacheDescriptorInvalid;
+            if (cacheDescriptorInvalid || !criticalSnapshotReady()) {
+                clearLocatorSkipFlags();
+                return false;
+            }
+            return true;
         } catch (Throwable e) {
             logDetail("读取缓存失败，重新解析: " + e.getMessage());
             return false;
@@ -4904,7 +4918,7 @@ public class DexFinder {
             editor.putBoolean(LOCATOR_ECS_COMPLETE, ecsGiftLocatorResolved);
             editor.putBoolean(LOCATOR_MSG_DESC_COMPLETE, msgDescLocatorResolved);
             editor.putBoolean(LOCATOR_PROTOBUF_COMPLETE, protobufLocatorResolved);
-            boolean snapshotReady = !cacheDescriptorInvalid;
+            boolean snapshotReady = !cacheDescriptorInvalid && criticalSnapshotReady();
             editor.putString(CACHE_SNAPSHOT_VERSION_KEY,
                     snapshotReady ? CACHE_SNAPSHOT_VERSION : "");
             editor.putBoolean(CACHE_COMPLETE, snapshotReady);
@@ -5124,6 +5138,81 @@ public class DexFinder {
                 if (!out.isEmpty()) return;
             } catch (Throwable ignored) {}
         }
+    }
+
+    private boolean criticalSnapshotReady() {
+        return sqliteDbWrapperClass != null
+                && sendTextMsgClass != null
+                && receiveLuckyMoneyClass != null
+                && openLuckyMoneyClass != null
+                && netQueueClass != null
+                && addMsgClasses != null
+                && !addMsgClasses.isEmpty()
+                && chatPageStartMethod != null
+                && chatFooterSendClickMethod != null;
+    }
+
+    private void clearLocatorSkipFlags() {
+        receiveUnionLocatorResolved = false;
+        openUnionLocatorResolved = false;
+        networkQueueLocatorResolved = false;
+        wishLocatorResolved = false;
+        packetCompatLocatorResolved = false;
+        ecsGiftLocatorResolved = false;
+        msgDescLocatorResolved = false;
+        protobufLocatorResolved = false;
+        voiceMessagePathLookupComplete = false;
+    }
+
+    private Class<?> findSqliteWrapperClass() {
+        try {
+            List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(
+                    "MicroMsg.SqliteDB", "sql is null "));
+            if (classes == null || classes.isEmpty()) {
+                classes = dexKit.findClass(mkClassUsingStrings("MicroMsg.SqliteDB"));
+            }
+            if (classes == null || classes.isEmpty()) {
+                logLocateOnce("sqlite-wrapper", TAG + " 数据库wrapper未找到: hits=0");
+                return null;
+            }
+            StringBuilder names = new StringBuilder();
+            for (ClassData cd : classes) {
+                String name = cd != null ? cd.getName() : "";
+                if (names.length() > 0) names.append(',');
+                names.append(name);
+                Class<?> loaded = KavaReflector.loadClass(name, classLoader);
+                if (loaded != null && hasSqliteWrapperInsert(loaded)) return loaded;
+            }
+            logLocateOnce("sqlite-wrapper", TAG + " 数据库wrapper未找到: hits="
+                    + classes.size() + " names=" + names);
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " 数据库wrapper搜索失败: " + e.getMessage(), e);
+        }
+        return null;
+    }
+
+    private boolean hasSqliteWrapperInsert(Class<?> clazz) {
+        Class<?> current = clazz;
+        while (current != null && current != Object.class) {
+            for (Method method : KavaReflector.declaredMethods(current)) {
+                if (method == null || method.getReturnType() != long.class) continue;
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length == 3
+                        && params[0] == String.class
+                        && params[1] == String.class
+                        && ContentValues.class.isAssignableFrom(params[2])) {
+                    return true;
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return false;
+    }
+
+    private void logLocateOnce(String key, String message) {
+        if (key == null || message == null) return;
+        if (!loggedLocateFailures.add(key)) return;
+        h.Hchat.utils.HLog.e(message);
     }
 
     private Class<?> findFirstClassByStrings(String... strings) {

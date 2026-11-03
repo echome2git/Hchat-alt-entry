@@ -162,20 +162,20 @@ class DexKitBridge : Closeable {
     private fun openNative(path: String, onMemoryFallback: Consumer<String>?): Long {
         val loader = fallbackClassLoader
         val apkPointer = nativeInitDexKit(path)
-        val apkHits = runCatching { hostClassHits(apkPointer) }.getOrDefault(0)
-        if (apkPointer != 0L && apkHits > 0 && fallbackClassLoader === loader) {
+        val apkProbe = probeHost(apkPointer)
+        if (apkPointer != 0L && apkProbe.usable && fallbackClassLoader === loader) {
             apkSeesHost.set(true)
             openedWithLoader = loader
             return apkPointer
         }
         val baseLoader = baseDexClassLoader(loader)
         var memoryPointer = 0L
-        var memoryHits = 0
+        var memoryProbe = HostProbe(0, 0, 0)
         var memoryError: String? = null
         if (baseLoader != null) {
             try {
                 memoryPointer = nativeInitDexKitByClassLoader(baseLoader, true)
-                memoryHits = if (memoryPointer != 0L) hostClassHits(memoryPointer) else 0
+                memoryProbe = probeHost(memoryPointer)
             } catch (error: Throwable) {
                 memoryError = error.message ?: error.javaClass.simpleName
                 if (memoryPointer != 0L) {
@@ -185,28 +185,33 @@ class DexKitBridge : Closeable {
             }
         }
         val loaderChanged = fallbackClassLoader !== loader
-        if (memoryPointer != 0L && memoryHits > 0 && !loaderChanged) {
+        if (memoryPointer != 0L && memoryProbe.usable && !loaderChanged) {
             if (apkPointer != 0L) nativeRelease(apkPointer)
             memoryResident.set(true)
             openedWithLoader = loader
             reportFallback(
                 onMemoryFallback,
-                "APK 路径 DexKit 未读到微信代码，改用 ClassLoader 内存 dex: hits=$memoryHits dex=${nativeGetDexNum(memoryPointer)} loader=${baseLoader?.javaClass?.name}"
+                "APK 路径 DexKit 未同时读到微信内核和数据库类，改用 ClassLoader 内存 dex: "
+                    + apkProbe.describe("apk")
+                    + " " + memoryProbe.describe("memory")
+                    + " loader=${baseLoader?.javaClass?.name}"
             )
             return memoryPointer
         }
         if (memoryPointer != 0L) nativeRelease(memoryPointer)
         if (loaderChanged) releaseBecauseLoaderChanged.set(true)
         openedWithLoader = loader
-        if (apkPointer != 0L && apkHits > 0) {
+        if (apkPointer != 0L && apkProbe.usable) {
             apkSeesHost.set(true)
             return apkPointer
         }
         if (fallbackFailureLogged.compareAndSet(false, true)) {
-            val apkDex = if (apkPointer != 0L) runCatching { nativeGetDexNum(apkPointer) }.getOrDefault(-1) else 0
             reportFallback(
                 onMemoryFallback,
-                "APK 与 ClassLoader DexKit 都未读到 MicroMsg.MMKernel: apkDex=$apkDex apkHits=$apkHits memoryHits=$memoryHits memoryError=$memoryError"
+                "APK 与 ClassLoader DexKit 都未同时读到 MicroMsg.MMKernel 和 MicroMsg.SqliteDB: "
+                    + apkProbe.describe("apk")
+                    + " " + memoryProbe.describe("memory")
+                    + " memoryError=$memoryError"
             )
         }
         if (apkPointer != 0L) return apkPointer
@@ -221,16 +226,53 @@ class DexKitBridge : Closeable {
         }
     }
 
-    private fun hostClassHits(pointer: Long): Int {
-        if (pointer == 0L || nativeGetDexNum(pointer) <= 0) return 0
+    private fun probeHost(pointer: Long): HostProbe {
+        if (pointer == 0L) return HostProbe(0, 0, 0)
+        val dexNum = runCatching { nativeGetDexNum(pointer) }.getOrDefault(0)
+        if (dexNum <= 0) return HostProbe(dexNum, 0, 0)
+        val kernelHits = runCatching { loadableClassHits(pointer, HOST_CANARY) }.getOrDefault(0)
+        val sqliteHits = if (kernelHits > 0) {
+            runCatching { loadableClassHits(pointer, SQLITE_CANARY) }.getOrDefault(0)
+        } else {
+            0
+        }
+        return HostProbe(dexNum, kernelHits, sqliteHits)
+    }
+
+    /** 命中数必须能被当前 ClassLoader 加载，避免空结果被解析成假的 classesLength。 */
+    private fun loadableClassHits(pointer: Long, text: String): Int {
         val findClass = FindClass()
         val matcher = ClassMatcher()
-        matcher.usingStrings(listOf(HOST_CANARY))
+        matcher.usingStrings(listOf(text))
         findClass.matcher(matcher)
         val bytes = nativeFindClass(pointer, findClass.serializedBytes())
         if (bytes.isEmpty()) return 0
         val holder = InnerClassMetaArrayHolder.getRootAsClassMetaArrayHolder(ByteBuffer.wrap(bytes))
-        return holder.classesLength
+        val total = holder.classesLength
+        if (total <= 0) return 0
+        val loader = baseDexClassLoader(fallbackClassLoader)
+        var loaded = 0
+        val limit = minOf(total, 8)
+        for (i in 0 until limit) {
+            val descriptor = holder.classes(i)?.dexDescriptor ?: continue
+            if (loader == null || canLoadDescriptor(loader, descriptor)) loaded++
+        }
+        return loaded
+    }
+
+    private fun canLoadDescriptor(loader: ClassLoader, descriptor: String): Boolean {
+        val name = when {
+            descriptor.startsWith("L") && descriptor.endsWith(";") && descriptor.length > 2 ->
+                descriptor.substring(1, descriptor.length - 1).replace('/', '.')
+            !descriptor.contains('/') && !descriptor.startsWith("[") -> descriptor
+            else -> return false
+        }
+        return try {
+            Class.forName(name, false, loader)
+            true
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private fun baseDexClassLoader(loader: ClassLoader?): ClassLoader? {
@@ -780,8 +822,21 @@ class DexKitBridge : Closeable {
         return withNativeReadToken { nativeGetMethodOpCodes(it, encodeId) }.toList()
     }
 
+    private class HostProbe(
+        val dexNum: Int,
+        val kernelHits: Int,
+        val sqliteHits: Int
+    ) {
+        val usable: Boolean get() = kernelHits > 0 && sqliteHits > 0
+
+        fun describe(name: String): String {
+            return "$name" + "Dex=$dexNum $name" + "Kernel=$kernelHits $name" + "Sqlite=$sqliteHits"
+        }
+    }
+
     companion object {
         private const val HOST_CANARY = "MicroMsg.MMKernel"
+        private const val SQLITE_CANARY = "MicroMsg.SqliteDB"
 
         /** Hchat 托管入口：保持原 API 可用；真正查询时才加载，空闲后自动释放。 */
         @JvmStatic

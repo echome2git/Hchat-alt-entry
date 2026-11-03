@@ -5,7 +5,7 @@
 ## 生命周期
 
 - `createManaged(path, idleTimeoutMillis, onIdleRelease)` 只记录 APK 身份，实际 native 查询才加载。
-- `createManaged(path, classLoader, idleTimeoutMillis, onMemoryFallback, onIdleRelease)` 在 APK 内 DEX 读不到 `MicroMsg.MMKernel` 时改用 ClassLoader 内存 dex。内存 dex 命中后不再按 30 秒释放；APK 能读到锚点时行为与原入口相同。`updateFallbackClassLoader` 只在两种来源都还没读到代码时更换加载器，并让下一次查询重新打开。
+- `createManaged(path, classLoader, idleTimeoutMillis, onMemoryFallback, onIdleRelease)` 在 APK 内 DEX 不能同时加载 `MicroMsg.MMKernel` 和 `MicroMsg.SqliteDB` 时改用 ClassLoader 内存 dex。内存 dex 两个锚点都能加载后不再按 30 秒释放；APK 能同时加载时行为与原入口相同。`updateFallbackClassLoader` 只在两种来源都还没读到代码时更换加载器，并让下一次查询重新打开。
 - Hchat 共享入口最后一次查询结束后空闲 30 秒，后台释放 native 分析资源；轻量 Java 桥接对象及已定位 Method/Class 保留。
 - 所有 native 查询与回收经同一可重入锁，禁止关闭在途查询；后续功能和旧结果懒加载按需恢复。
 - 永久 `close()` 不可恢复；线程数和最大并发设置在重新打开时重放。旧工厂方法保持原有语义。
