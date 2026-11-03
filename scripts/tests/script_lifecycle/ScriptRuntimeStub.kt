@@ -5,7 +5,9 @@ import java.util.concurrent.atomic.AtomicInteger
 class ScriptMessageBean(private val message: TestMessage) {
     init { constructed.incrementAndGet() }
     fun isImage() = message.kind == "image"
+    fun isVoice() = false
     fun isVideo() = false
+    fun getCreateTime() = 0L
     fun isVideoNumberVideo() = false
     fun isSend() = false
     fun getMsgId() = message.id

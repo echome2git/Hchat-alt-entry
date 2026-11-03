@@ -465,7 +465,7 @@ boolean onLongClickSendBtn(String text) {
 
 - Hchat 的脚本普通消息监听只订阅微信 `message` 数据库变化，不再使用 PB/AddMsg 实时层作为 `onHandleMsg` 来源。
 - 数据库层回调可能比 PB 实时层略晚，但字段更稳定，`getMsgId()` 通常可直接拿到本地消息 ID，适合引用回复、去重和记录消息。
-- Hchat 会在调用插件前做短窗口去重；`getMsgId()` 命中时会使用较长窗口，防止同一条 DB 消息 insert/update 分两次触发。
+- Hchat 会在调用插件前做短窗口去重；`getMsgId()` 命中时会使用较长窗口，防止同一条 DB 消息 insert/update 分两次触发。正文仍为空、且创建时间在两分钟内的文本、表情和 AppMsg，会先在写入线程之外按 `msgId` 再读几次，读到正文后再调用 `onHandleMsg`；图片、语音、视频不等待正文。
 - `getMsgSvrId()` 和内容去重仍保留 1 秒窗口；内容窗口会使用归一化后的会话、发送者、类型、内容等信息，群聊里 `wxid:\n内容` 这种前缀差异也会归一化处理。
 - `onMemberChange(...)`、`onNewFriend(...)` 等其它脚本回调来源不随普通消息监听改变。
 - 如果插件会发积分、红包、抽奖、签到奖励等强副作用，仍建议按自己的业务 ID 再做一次幂等保护。

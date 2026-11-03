@@ -150,15 +150,42 @@ public final class WeChatMessageChangeApi {
 
     private WeChatMessage resolveMessage(DatabaseChange change) {
         long msgId = resolveMsgId(change);
+        String inline = contentText(change.values);
         if (hasMessageSnapshot(change.values)) {
             return messageFromValues(change.values, msgId);
         }
+        WeChatMessage stored = null;
         if (msgId > 0L && messageStoreApi != null && !TextUtils.isEmpty(change.table)) {
-            WeChatMessage stored = messageStoreApi.getMessageByIdInTable(change.table, msgId);
-            if (stored != null) return stored;
+            stored = messageStoreApi.getMessageByIdInTable(change.table, msgId);
         }
+        if (stored != null && !TextUtils.isEmpty(stored.content)) {
+            return stored;
+        }
+        if (!TextUtils.isEmpty(inline)) {
+            if (stored != null) return replaceContent(stored, inline);
+            if (change.values != null) return messageFromValues(change.values, msgId);
+        }
+        if (stored != null) return stored;
         if (change.values == null) return null;
         return messageFromValues(change.values, msgId);
+    }
+
+    private static WeChatMessage replaceContent(WeChatMessage stored, String content) {
+        return new WeChatMessage(
+                stored.msgId,
+                stored.msgSvrId,
+                stored.type,
+                stored.status,
+                stored.isSend,
+                stored.createTime,
+                stored.talker,
+                content,
+                stored.imagePath,
+                stored.reserved,
+                stored.translatedContent,
+                stored.flag,
+                stored.msgSource,
+                stored.selfWxId);
     }
 
     private boolean hasMessageSnapshot(ContentValues values) {
@@ -183,9 +210,7 @@ public final class WeChatMessageChangeApi {
 
     private static String contentText(ContentValues values) {
         if (values == null || !values.containsKey("content")) return "";
-        Object value = values.get("content");
-        if (value == null || value instanceof byte[]) return "";
-        return String.valueOf(value).trim();
+        return WeChatMessageText.fromValue(values.get("content"));
     }
 
     private WeChatMessage messageFromValues(ContentValues values, long msgId) {

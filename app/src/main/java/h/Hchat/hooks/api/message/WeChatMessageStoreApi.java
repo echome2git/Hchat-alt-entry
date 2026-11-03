@@ -602,6 +602,10 @@ public final class WeChatMessageStoreApi {
 
     private static String str(Map<String, Object> row, String key) {
         Object value = row != null ? row.get(key) : null;
+        if ("content".equals(key) || "transContent".equals(key) || "msgSource".equals(key)) {
+            return WeChatMessageText.fromValue(value);
+        }
+        if (value instanceof byte[]) return "";
         return value != null ? String.valueOf(value) : "";
     }
 

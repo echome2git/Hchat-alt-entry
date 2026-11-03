@@ -306,7 +306,7 @@ WeChatApis.message().events().subscribeMessage(event -> {
 
 `WeChatApis.message().changes()`
 
-监听 `message` 表新增、更新、删除。来源是 `runtime().databaseChanges()`，不额外猜微信混淆类。需要监听消息分表的功能应在自己的业务范围内订阅底层变更，不能扩大该共享 API 的事件语义。回调发生在数据库写入线程上：本次写入已经带有 `talker`、`content`、`type`、`isSend`、`createTime`，且文本、表情、AppMsg 等正文不是空串或字节数组时，直接使用这些字段，不再查库。图片、语音、视频允许正文为空。缺字段或正文还是空的，只按本次表名和 `msgId` 读取这一张表，不在这条回调里扫描全部分表。脚本对同一 `msgId` 的空正文和随后补上的正文分开去重，避免先到的空记录挡住文本转发。
+监听 `message` 表新增、更新、删除。来源是 `runtime().databaseChanges()`，不额外猜微信混淆类。需要监听消息分表的功能应在自己的业务范围内订阅底层变更，不能扩大该共享 API 的事件语义。回调发生在数据库写入线程上：本次写入已经带有 `talker`、`content`、`type`、`isSend`、`createTime`，且文本、表情、AppMsg 等正文不是空串或无法还原的字节数组时，直接使用这些字段，不再查库。图片、语音、视频允许正文为空。缺字段或正文还是空的，只按本次表名和 `msgId` 读取这一张表，不在这条回调里扫描全部分表。查到的正文仍为空时，脚本会在写入线程之外按 `msgId` 再读几次，只处理创建时间落在两分钟内的非图片、非语音、非视频消息，读到正文后再进入 `onHandleMsg`。字节数组正文按 UTF-8 或 UTF-16LE 还原，无法识别时仍视为空。脚本对同一 `msgId` 的空正文和随后补上的正文分开去重，避免先到的空记录挡住文本转发。
 
 ```java
 WeChatApis.message().changes().subscribe(change -> {

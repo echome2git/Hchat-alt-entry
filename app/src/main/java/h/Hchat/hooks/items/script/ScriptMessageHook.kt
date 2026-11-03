@@ -19,6 +19,8 @@ object ScriptMessageHook {
     private const val MEDIA_MESSAGE_WAIT_MS = 15_000L
     private const val MEDIA_MESSAGE_RETRY_MS = 250L
     private const val MESSAGE_DISPATCH_QUEUE_CAPACITY = 128
+    private const val BODY_REFRESH_QUEUE_CAPACITY = 64
+    private const val BODY_REFRESH_MAX_AGE_MS = 120_000L
     private const val OVERFLOW_LOG_INTERVAL_MS = 10_000L
     private const val MEDIA_DISPATCH_QUEUE_CAPACITY = 32
     private const val MAX_RECENT_MESSAGES = 4096
@@ -26,6 +28,7 @@ object ScriptMessageHook {
     @Volatile
     private var installed = false
     private val recentMessages = ConcurrentHashMap<String, Long>()
+    private val pendingBodyRefresh = ConcurrentHashMap.newKeySet<String>()
     private val droppedMessages = AtomicLong()
     private val nextOverflowLogAtMs = AtomicLong()
     private val dispatchExecutor = ThreadPoolExecutor(
@@ -47,6 +50,17 @@ object ScriptMessageHook {
         ArrayBlockingQueue(MEDIA_DISPATCH_QUEUE_CAPACITY),
         { runnable ->
             Thread(runnable, "HchatScriptMediaMessage").apply { isDaemon = true }
+        },
+        ThreadPoolExecutor.AbortPolicy()
+    )
+    private val bodyRefreshExecutor = ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(BODY_REFRESH_QUEUE_CAPACITY),
+        { runnable ->
+            Thread(runnable, "HchatScriptMessageBody").apply { isDaemon = true }
         },
         ThreadPoolExecutor.AbortPolicy()
     )
@@ -87,6 +101,72 @@ object ScriptMessageHook {
     }
 
     private fun dispatchMessageDedup(message: ScriptMessageBean) {
+        if (!ScriptPluginRuntime.hasHandleMsgCallbacks()) return
+        if (needsBodyRefresh(message)) {
+            scheduleBodyRefresh(message)
+            return
+        }
+        enqueueDeduped(message)
+    }
+
+    private fun needsBodyRefresh(message: ScriptMessageBean): Boolean {
+        if (message.getMsgId() <= 0L) return false
+        if (message.isImage() || message.isVoice() || message.isVideo()) return false
+        if (message.getContent().isNotBlank()) return false
+        val created = message.getCreateTime()
+        if (created <= 0L) return true
+        val millis = if (created > 100_000_000_000L) created else created * 1000L
+        val age = System.currentTimeMillis() - millis
+        return age < BODY_REFRESH_MAX_AGE_MS && age > -BODY_REFRESH_MAX_AGE_MS
+    }
+
+    private fun scheduleBodyRefresh(message: ScriptMessageBean) {
+        val key = message.getTalker() + ":" + message.getMsgId()
+        if (!pendingBodyRefresh.add(key)) return
+        try {
+            bodyRefreshExecutor.execute {
+                try {
+                    enqueueDeduped(resolveBodyMessage(message))
+                } catch (t: Throwable) {
+                    HLog.e("[Hchat:Script] 空正文补读失败: ${t.message}", t)
+                    enqueueDeduped(message)
+                } finally {
+                    pendingBodyRefresh.remove(key)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            pendingBodyRefresh.remove(key)
+            enqueueDeduped(message)
+        }
+    }
+
+    private fun resolveBodyMessage(message: ScriptMessageBean): ScriptMessageBean {
+        val msgId = message.getMsgId()
+        if (msgId <= 0L) return message
+        val store = runCatching { WeChatApis.message().store() }.getOrNull() ?: return message
+        var latest = message
+        var delay = 0L
+        repeat(5) {
+            if (delay > 0L) {
+                try {
+                    Thread.sleep(delay)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return latest
+                }
+            }
+            val stored = runCatching { store.getMessageById(msgId) }.getOrNull()
+            if (stored != null) {
+                val refreshed = ScriptMessageBean(stored)
+                latest = refreshed
+                if (refreshed.getContent().isNotBlank()) return refreshed
+            }
+            delay = if (delay == 0L) 80L else delay * 2
+        }
+        return latest
+    }
+
+    private fun enqueueDeduped(message: ScriptMessageBean) {
         if (!ScriptPluginRuntime.hasHandleMsgCallbacks()) return
         val now = System.currentTimeMillis()
         cleanup(now)
