@@ -96,6 +96,11 @@ jobs:
             GITHUB_RUN_NUMBER -
             HCAT_SINGLE_RUN_NUMBER_BASE
           ))
+          # 上游运行号已越过锚点 294。fork 的该工作流从 1 起算，
+          # 490 + 1 - 294 = 197，会小于等于基准 490。此时改为基准加本工作流运行号。
+          if [ "$version_code" -le "$HCAT_SINGLE_VERSION_CODE_BASE" ]; then
+            version_code=$((HCAT_SINGLE_VERSION_CODE_BASE + GITHUB_RUN_NUMBER))
+          fi
           if [ "$version_code" -le "$HCAT_SINGLE_VERSION_CODE_BASE" ] \
             || [ "$version_code" -gt 2147483647 ]; then
             echo "单频道构建版本 Code 超出有效范围: ${version_code}"

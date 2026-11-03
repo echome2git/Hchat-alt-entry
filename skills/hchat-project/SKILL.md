@@ -150,7 +150,7 @@ test -f "$WECHAT_APK" && ls -lh "$WECHAT_APK"
 - 主线与 `alt-entry` 产物文件名固定为 `Hchat-release-signed.apk` 和 `Hchat-alt-entry-release-signed.apk`。
 - GitHub Actions 使用 `gradle/actions/setup-gradle`、Gradle build cache 和并行任务；两个受信任分支均允许写缓存，setup action 不校验仓库现有 wrapper JAR；双频道工作流并行构建两个工作区后统一发布，不要恢复为串行构建或关闭缓存。
 - 日常安装验证可使用 `.github/workflows/android-test.yml` 构建当前频道的无 R8 测试包；该工作流临时关闭 minify 和资源压缩、跳过 release lint，只上传 Actions Artifact，不得创建 tag、Release 或 Telegram 消息。正式发布仍使用保留 R8 的单频道或双频道工作流。
-- 双频道正式工作流与无 R8 测试工作流直接使用各自的 GitHub Actions 构建编号作为 `versionCode`；单频道正式工作流按文档记录的本地版本与历史运行号锚点换算，保持后续单频道版本连续递增。
+- 双频道正式工作流与无 R8 测试工作流直接使用各自的 GitHub Actions 构建编号作为 `versionCode`；单频道正式工作流按文档记录的本地版本与历史运行号锚点换算，保持后续单频道版本连续递增。fork 上该工作流运行号尚未越过锚点时，`versionCode` 改为基准 `490` 加本工作流运行号。
 - GitHub Actions 生成 `versionName` 时三段都按 0-9 进位，`minor` 超过 9 必须进到 `major`，不要生成 `1.10.x` 这类未归一化版本。
 - 常用命令：
 
