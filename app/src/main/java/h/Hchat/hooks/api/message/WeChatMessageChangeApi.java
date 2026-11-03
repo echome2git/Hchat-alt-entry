@@ -127,6 +127,7 @@ public final class WeChatMessageChangeApi {
 
     private void onDatabaseChanged(DatabaseChange change) {
         if (change == null || !isMessageTable(change.table)) return;
+        if (listeners.isEmpty()) return;
         WeChatMessage message = resolveMessage(change);
         MessageChange event = new MessageChange(change, message);
         for (Listener listener : listeners) {
@@ -148,25 +149,41 @@ public final class WeChatMessageChangeApi {
 
     private WeChatMessage resolveMessage(DatabaseChange change) {
         long msgId = resolveMsgId(change);
-        if (msgId > 0 && messageStoreApi != null) {
-            WeChatMessage stored = messageStoreApi.getMessageById(msgId);
+        if (hasMessageSnapshot(change.values)) {
+            return messageFromValues(change.values, msgId);
+        }
+        if (msgId > 0L && messageStoreApi != null && !TextUtils.isEmpty(change.table)) {
+            WeChatMessage stored = messageStoreApi.getMessageByIdInTable(change.table, msgId);
             if (stored != null) return stored;
         }
         if (change.values == null) return null;
+        return messageFromValues(change.values, msgId);
+    }
+
+    private boolean hasMessageSnapshot(ContentValues values) {
+        return values != null
+                && values.containsKey("talker")
+                && values.containsKey("content")
+                && values.containsKey("type")
+                && values.containsKey("isSend")
+                && values.containsKey("createTime");
+    }
+
+    private WeChatMessage messageFromValues(ContentValues values, long msgId) {
         return new WeChatMessage(
                 msgId,
-                longValue(change.values, "msgSvrId"),
-                intValue(change.values, "type"),
-                intValue(change.values, "status"),
-                intValue(change.values, "isSend"),
-                longValue(change.values, "createTime"),
-                str(change.values, "talker"),
-                str(change.values, "content"),
-                str(change.values, "imgPath"),
-                str(change.values, "reserved"),
-                str(change.values, "transContent"),
-                intValue(change.values, "flag"),
-                str(change.values, "msgSource"),
+                longValue(values, "msgSvrId"),
+                intValue(values, "type"),
+                intValue(values, "status"),
+                intValue(values, "isSend"),
+                longValue(values, "createTime"),
+                str(values, "talker"),
+                str(values, "content"),
+                str(values, "imgPath"),
+                str(values, "reserved"),
+                str(values, "transContent"),
+                intValue(values, "flag"),
+                str(values, "msgSource"),
                 selfWxId());
     }
 

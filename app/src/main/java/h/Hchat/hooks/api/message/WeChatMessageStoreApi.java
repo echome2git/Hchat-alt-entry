@@ -118,6 +118,16 @@ public final class WeChatMessageStoreApi {
         }
     }
 
+    public WeChatMessage getMessageByIdInTable(String table, long msgId) {
+        if (msgId <= 0L || TextUtils.isEmpty(table)) return null;
+        String quoted = quoteMessageTable(table);
+        if (TextUtils.isEmpty(quoted)) return null;
+        List<WeChatMessage> rows = queryMessages(
+                "SELECT * FROM " + quoted + " WHERE msgId=? LIMIT 1",
+                new String[]{String.valueOf(msgId)});
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     public WeChatMessage getMessageById(long msgId) {
         if (msgId <= 0L) return null;
         for (String table : messageTables()) {
