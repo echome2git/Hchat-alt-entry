@@ -1138,13 +1138,13 @@ Provider 分类决定主页面所在页签：
 - `FeatureSettingsProvider.CATEGORY_ENTERTAINMENT`: 娱乐
 - `FeatureSettingsProvider.CATEGORY_ENHANCE`: 插件
 
-`SimpleFeatureSettingsProvider(featureId, title, subtitle)` 默认放到 `插件`。需要放到 `实用` 或 `娱乐` 时，使用四参数构造。主页面先按分类进入页签，页签内可在 `MiuixSettingsPage.kt` 里按功能 ID 做固定分组和排序。
+`SimpleFeatureSettingsProvider(featureId, title, subtitle)` 默认放到 `插件`。需要放到 `实用` 或 `娱乐` 时，使用四参数构造。主页面先按分类进入页签，页签内可在 `MiuixSettingsPage.kt` 同包文件里按功能 ID 做固定分组和排序。
 
-然后在 `ui/miuix/MiuixSettingsPage.kt` 添加实际页面：
+然后在同包顶层函数里添加实际页面，并接到 `FeatureSettingsPage(...)`。不要把大量新页面继续堆进同一个文件：
 
 ```kotlin
 @Composable
-private fun FeatureSettingsPage(
+internal fun FeatureSettingsPage(
     context: Context,
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
@@ -1158,7 +1158,7 @@ private fun FeatureSettingsPage(
 
 ## 设置 UI 规则
 
-所有设置 UI 都由 `MiuixSettingsPage.kt` 里的内嵌 Miuix 框架渲染。
+所有设置 UI 都由 `MiuixSettingsPage.kt` 和同包 `MiuixSettingsPagePart*.kt` 里的内嵌 Miuix 框架渲染。入口对象仍是 `MiuixSettingsPage`。
 
 硬规则：
 
@@ -1676,7 +1676,7 @@ hooks/items/example/notify/    # Toast、系统通知、模板变量
 
 不要把功能私有逻辑放进 `hooks/api`。只有多个功能都能复用、并且已经确认兼容的微信能力才放 API 层。
 
-设置 UI 不放在功能包里。新增功能的设置页面统一写到 `ui/miuix/MiuixSettingsPage.kt`，并从 `FeatureSettingsPage(...)` 按 `featureId()` 分发。
+设置 UI 不放在功能包里。新增功能的设置页面写到 `ui/miuix/MiuixSettingsPage.kt` 同包的顶层函数里，并从 `FeatureSettingsPage(...)` 按 `featureId()` 分发。页面函数使用 `internal`，避免再把 `MiuixSettingsPageKt` 撑过 JVM 类文件上限。
 
 主设置页已经内置 KSU 风格 Miuix 液态玻璃底部导航：实用、娱乐、插件、设置。不要为单个功能再做独立底部导航；功能详情页需要底部操作时使用统一的 `BottomActionBar`。
 
@@ -1757,11 +1757,11 @@ class ExampleSettingsProvider : SimpleFeatureSettingsProvider(
 
 ### Miuix Settings Page
 
-在 `app/src/main/java/h/Hchat/ui/miuix/MiuixSettingsPage.kt` 的 `FeatureSettingsPage(...)` 添加分支：
+在同包 `FeatureSettingsPage(...)` 添加分支。该函数目前位于 `MiuixSettingsPagePart*.kt`：
 
 ```kotlin
 @Composable
-private fun FeatureSettingsPage(
+internal fun FeatureSettingsPage(
     context: Context,
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
@@ -1996,7 +1996,7 @@ fun onEvent() {
 - Runtime logs should be quiet by default. Log failures, missing classes, or explicit debug output only.
 - Keep feature entry classes small. Put parsing, action, notification, and state into separate classes.
 - Do not use WA/WAuxiliary API.
-- Do not use Dialog/AlertDialog/module Activity for settings. All settings pages must be embedded Miuix pages under `MiuixSettingsPage.kt`.
+- Do not use Dialog/AlertDialog/module Activity for settings. All settings pages must be embedded Miuix pages under `MiuixSettingsPage.kt` and the same-package `MiuixSettingsPagePart*.kt` files.
 - Settings providers are metadata only. Do not add `showDetail(Context)`.
 - Use shared Miuix rows/pickers so tap handling, scroll-position retention, contact avatars, and right-side selection marks stay consistent.
 - All switches and editable settings must take effect immediately after saving. Do not require restarting WeChat for normal settings.

@@ -16,7 +16,7 @@ WeChatApis.payment()
 
 ## Settings UI Boundary
 
-模块设置入口通过 `hooks/api/ui/SettingsInjector` 注入到微信设置页。`main` 和 `alt-entry` 当前使用同一套入口：微信设置页入口，以及按入口设置开关启用的 LauncherUI 右上角加号菜单和长按右上角加号入口。点击任一入口后只调用 `ui/SettingsUI.show(context)`，再由 `ui/miuix/MiuixSettingsPage.kt` 把 Miuix Compose 页面嵌入当前微信 `Activity`。
+模块设置入口通过 `hooks/api/ui/SettingsInjector` 注入到微信设置页。`main` 和 `alt-entry` 当前使用同一套入口：微信设置页入口，以及按入口设置开关启用的 LauncherUI 右上角加号菜单和长按右上角加号入口。点击任一入口后只调用 `ui/SettingsUI.show(context)`，再由 `ui/miuix/MiuixSettingsPage.kt` 把 Miuix Compose 页面嵌入当前微信 `Activity`。入口对象仍是 `MiuixSettingsPage`；顶层页面函数拆在同包的 `MiuixSettingsPagePart*.kt`，避免 `MiuixSettingsPageKt` 超过 JVM 类文件上限。
 
 微信设置页入口必须在 `Hchat-Init` 功能安装阶段尽早安装，不等待普通 `DexInstallScheduler` 队列或 `DexReady` 补装，避免微信设置页 UI 已构建后入口才补 Hook 导致偶发不显示。入口定位和安装仍通过 `DexInstallScheduler.runDexKitTask(...)` 与其它共享 `DexKitBridge` 查询串行执行，不能再启动独立线程并发进入 DexKit。
 
@@ -38,7 +38,7 @@ WeChatApis.payment()
 - 不要从功能代码启动模块 app 的 Activity。
 - 不要用 `Dialog` / `AlertDialog` / feature-local floating view 做功能设置页；当前唯一例外是脚本插件 README 说明窗口，它只是轻量文档弹窗，不承载配置流程。
 - 不要在 `FeatureSettingsProvider` 里恢复 `showDetail(Context)`；Provider 只提供 `featureId/title/subtitle/category` 元信息。
-- 新增功能设置页要接入 `MiuixSettingsPage.FeatureSettingsPage(...)` 的 `featureId()` 分支。
+- 新增功能设置页要接入同包 `FeatureSettingsPage(...)` 的 `featureId()` 分支。这个函数是 `internal`，目前在 `MiuixSettingsPagePart*.kt`。
 - 页面内二级选择统一用 `OptionPickerPage` / `ContactPickerPage`，不要在功能页里手写新选择弹窗；群成员这类共享联系人选择器无法覆盖的场景才使用专用选择页。
 - 设置 UI 里需要联系人数据时优先复用 `ContactPickerPage`，不要每个功能重复查好友、群聊、公众号和头像。
 - 主设置页底部导航统一由 `MiuixSettingsPage.kt` 管理，四个 tab 是 实用、娱乐、插件、设置，右侧最后一个 tab 固定为 设置。
