@@ -176,9 +176,9 @@ public final class WeChatMessageChangeApi {
     }
 
     private static boolean snapshotAllowsEmptyContent(int type) {
-        return WeChatMessageTypes.isImage(type)
-                || WeChatMessageTypes.isVoice(type)
-                || WeChatMessageTypes.isVideo(type);
+        return WeChatMessageTypes.INSTANCE.isImage(type)
+                || WeChatMessageTypes.INSTANCE.isVoice(type)
+                || WeChatMessageTypes.INSTANCE.isVideo(type);
     }
 
     private static String contentText(ContentValues values) {
