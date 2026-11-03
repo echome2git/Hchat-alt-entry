@@ -199,12 +199,13 @@ object ScriptMessageHook {
         val type = normalizeType(message.getMsgType())
         val content = normalizeContent(message.getContent(), talker, sender)
         val msgId = message.getMsgId()
+        val holdsBody = content.isNotEmpty() || isBodyOptional(message)
         if (msgId > 0L) {
-            keys += "msg:$talker:$msgId"
+            keys += if (holdsBody) "msg:$talker:$msgId" else "msg-empty:$talker:$msgId"
         }
         val msgSvrId = message.getMsgSvrId()
         if (msgSvrId > 0L) {
-            keys += "svr:$talker:$msgSvrId"
+            keys += if (holdsBody) "svr:$talker:$msgSvrId" else "svr-empty:$talker:$msgSvrId"
         }
         keys += buildString {
             append("raw:")
@@ -234,6 +235,10 @@ object ScriptMessageHook {
     private fun normalizeSender(value: String?, talker: String): String {
         val sender = value.orEmpty().trim()
         return if (sender.isNotEmpty() && sender != talker) sender else ""
+    }
+
+    private fun isBodyOptional(message: ScriptMessageBean): Boolean {
+        return message.isImage() || message.isVoice() || message.isVideo()
     }
 
     private fun normalizeType(value: String?): String = value.orEmpty().trim()

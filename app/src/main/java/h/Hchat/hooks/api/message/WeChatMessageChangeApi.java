@@ -6,6 +6,7 @@ import android.text.TextUtils;
 import h.Hchat.hooks.api.contact.WeChatAccountApi;
 import h.Hchat.hooks.api.model.DatabaseChange;
 import h.Hchat.hooks.api.model.WeChatMessage;
+import h.Hchat.hooks.api.model.WeChatMessageTypes;
 import h.Hchat.hooks.api.runtime.WeChatDatabaseListenerApi;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -161,12 +162,30 @@ public final class WeChatMessageChangeApi {
     }
 
     private boolean hasMessageSnapshot(ContentValues values) {
-        return values != null
-                && values.containsKey("talker")
-                && values.containsKey("content")
-                && values.containsKey("type")
-                && values.containsKey("isSend")
-                && values.containsKey("createTime");
+        if (values == null
+                || !values.containsKey("talker")
+                || !values.containsKey("content")
+                || !values.containsKey("type")
+                || !values.containsKey("isSend")
+                || !values.containsKey("createTime")) {
+            return false;
+        }
+        // 文本、AppMsg 等常先插入空正文再更新。空正文不能当成完整快照，否则脚本会丢掉后续正文。
+        return snapshotAllowsEmptyContent(intValue(values, "type"))
+                || !TextUtils.isEmpty(contentText(values));
+    }
+
+    private static boolean snapshotAllowsEmptyContent(int type) {
+        return WeChatMessageTypes.isImage(type)
+                || WeChatMessageTypes.isVoice(type)
+                || WeChatMessageTypes.isVideo(type);
+    }
+
+    private static String contentText(ContentValues values) {
+        if (values == null || !values.containsKey("content")) return "";
+        Object value = values.get("content");
+        if (value == null || value instanceof byte[]) return "";
+        return String.valueOf(value).trim();
     }
 
     private WeChatMessage messageFromValues(ContentValues values, long msgId) {
@@ -221,7 +240,9 @@ public final class WeChatMessageChangeApi {
 
     private static String str(ContentValues values, String key) {
         if (values == null || TextUtils.isEmpty(key) || !values.containsKey(key)) return "";
+        if ("content".equals(key)) return contentText(values);
         Object value = values.get(key);
+        if (value instanceof byte[]) return "";
         return value != null ? String.valueOf(value) : "";
     }
 
