@@ -541,9 +541,17 @@ public class ModuleEntry implements IXposedHookLoadPackage {
         synchronized (DEXKIT_CREATE_LOCK) {
             String key = apkPath != null ? apkPath : "";
             DexKitBridge cached = DEXKIT_BRIDGES.get(key);
-            if (cached != null) return cached;
-            // 仅缓存轻量入口；实际查询才加载，连续空闲 30 秒后释放 native 分析资源。
-            DexKitBridge bridge = DexKitBridge.createManaged(apkPath, 30_000L);
+            if (cached != null) {
+                cached.updateFallbackClassLoader(classLoader);
+                return cached;
+            }
+            // 仅缓存轻量入口；实际查询才加载。APK 内 DEX 能读到微信代码时，连续空闲 30 秒后释放。
+            // 读不到时改用 ClassLoader 内存 dex，命中后保持驻留。
+            DexKitBridge bridge = DexKitBridge.createManaged(
+                    apkPath,
+                    classLoader,
+                    30_000L,
+                    message -> HLog.e(TAG + " " + message));
             DEXKIT_BRIDGES.put(key, bridge);
             return bridge;
         }

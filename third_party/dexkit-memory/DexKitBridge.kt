@@ -29,7 +29,19 @@ import org.luckypray.dexkit.query.BatchFindMethodUsingStrings
 import org.luckypray.dexkit.query.FindClass
 import org.luckypray.dexkit.query.FindField
 import org.luckypray.dexkit.query.FindMethod
+import org.luckypray.dexkit.query.matchers.ClassMatcher
 import org.luckypray.dexkit.result.AnnotationData
+import org.luckypray.dexkit.schema.`-AnnotationMetaArrayHolder` as InnerAnnotationMetaArrayHolder
+import org.luckypray.dexkit.schema.`-BatchClassMetaArrayHolder` as InnerBatchClassMetaArrayHolder
+import org.luckypray.dexkit.schema.`-BatchMethodMetaArrayHolder` as InnerBatchMethodMetaArrayHolder
+import org.luckypray.dexkit.schema.`-ClassMeta` as InnerClassMeta
+import org.luckypray.dexkit.schema.`-ClassMetaArrayHolder` as InnerClassMetaArrayHolder
+import org.luckypray.dexkit.schema.`-FieldMeta` as InnerFieldMeta
+import org.luckypray.dexkit.schema.`-FieldMetaArrayHolder` as InnerFieldMetaArrayHolder
+import org.luckypray.dexkit.schema.`-MethodMeta` as InnerMethodMeta
+import org.luckypray.dexkit.schema.`-MethodMetaArrayHolder` as InnerMethodMetaArrayHolder
+import org.luckypray.dexkit.schema.`-ParametersAnnotationMetaArrayHoler` as InnerParametersAnnotationMetaArrayHoler
+import org.luckypray.dexkit.schema.`-UsingFieldMetaArrayHolder` as InnerUsingFieldMetaArrayHolder
 import org.luckypray.dexkit.result.ClassData
 import org.luckypray.dexkit.result.ClassDataList
 import org.luckypray.dexkit.result.FieldData
@@ -46,6 +58,8 @@ import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.function.Consumer
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 import java.util.concurrent.locks.ReentrantReadWriteLock
@@ -61,6 +75,14 @@ class DexKitBridge : Closeable {
     private var idleNative: IdleNativeHandle? = null
     private var rememberedThreadNum: Int? = null
     private var rememberedMaxQueries: Int? = null
+    @Volatile
+    private var fallbackClassLoader: ClassLoader? = null
+    @Volatile
+    private var openedWithLoader: ClassLoader? = null
+    private val apkSeesHost = AtomicBoolean(false)
+    private val memoryResident = AtomicBoolean(false)
+    private val fallbackFailureLogged = AtomicBoolean(false)
+    private val releaseBecauseLoaderChanged = AtomicBoolean(false)
 
     @JvmSynthetic
     internal fun <T> withNativeReadToken(block: (Long) -> T): T {
@@ -91,12 +113,23 @@ class DexKitBridge : Closeable {
     /** 仅查询驻留状态，不因此创建 native 引擎。 */
     val isNativeLoaded get() = idleNative?.isLoaded ?: (token != 0L)
 
-    private constructor(apkPath: String, idleTimeoutMillis: Long, onIdleRelease: Runnable?) {
+    private constructor(apkPath: String, idleTimeoutMillis: Long, onIdleRelease: Runnable?) : this(
+        apkPath, null, idleTimeoutMillis, null, onIdleRelease
+    )
+
+    private constructor(
+        apkPath: String,
+        classLoader: ClassLoader?,
+        idleTimeoutMillis: Long,
+        onMemoryFallback: Consumer<String>?,
+        onIdleRelease: Runnable?
+    ) {
         val identity = ManagedApkIdentity(apkPath)
+        fallbackClassLoader = classLoader
         idleNative = IdleNativeHandle(idleTimeoutMillis, {
             // 同一路径被替换后，旧结果的编号不能用于新 APK。
             identity.verifyUnchanged()
-            val pointer = nativeInitDexKit(identity.path)
+            val pointer = openNative(identity.path, onMemoryFallback)
             if (pointer != 0L) {
                 try {
                     rememberedThreadNum?.let { nativeSetThreadNum(pointer, it) }
@@ -107,7 +140,111 @@ class DexKitBridge : Closeable {
                 }
             }
             pointer
-        }, { nativeRelease(it) }, onIdleRelease = { onIdleRelease?.run() })
+        }, { nativeRelease(it) },
+            onIdleRelease = { onIdleRelease?.run() },
+            keepResident = { memoryResident.get() },
+            consumeForceRelease = { releaseBecauseLoaderChanged.getAndSet(false) })
+    }
+
+    /**
+     * 早期入口可能先拿到 Tinker 之前的 ClassLoader。真正查询前换成当前加载器，
+     * 让下一次打开改扫内存 dex。已经确认 APK 或内存 dex 可读时不再更换。
+     */
+    fun updateFallbackClassLoader(classLoader: ClassLoader?) {
+        if (classLoader == null || apkSeesHost.get() || memoryResident.get()) return
+        val previous = fallbackClassLoader
+        fallbackClassLoader = classLoader
+        if (previous != null && previous !== classLoader && openedWithLoader != null) {
+            idleNative?.requestReopen()
+        }
+    }
+
+    private fun openNative(path: String, onMemoryFallback: Consumer<String>?): Long {
+        val loader = fallbackClassLoader
+        val apkPointer = nativeInitDexKit(path)
+        val apkHits = runCatching { hostClassHits(apkPointer) }.getOrDefault(0)
+        if (apkPointer != 0L && apkHits > 0 && fallbackClassLoader === loader) {
+            apkSeesHost.set(true)
+            openedWithLoader = loader
+            return apkPointer
+        }
+        val baseLoader = baseDexClassLoader(loader)
+        var memoryPointer = 0L
+        var memoryHits = 0
+        var memoryError: String? = null
+        if (baseLoader != null) {
+            try {
+                memoryPointer = nativeInitDexKitByClassLoader(baseLoader, true)
+                memoryHits = if (memoryPointer != 0L) hostClassHits(memoryPointer) else 0
+            } catch (error: Throwable) {
+                memoryError = error.message ?: error.javaClass.simpleName
+                if (memoryPointer != 0L) {
+                    nativeRelease(memoryPointer)
+                    memoryPointer = 0L
+                }
+            }
+        }
+        val loaderChanged = fallbackClassLoader !== loader
+        if (memoryPointer != 0L && memoryHits > 0 && !loaderChanged) {
+            if (apkPointer != 0L) nativeRelease(apkPointer)
+            memoryResident.set(true)
+            openedWithLoader = loader
+            reportFallback(
+                onMemoryFallback,
+                "APK 路径 DexKit 未读到微信代码，改用 ClassLoader 内存 dex: hits=$memoryHits dex=${nativeGetDexNum(memoryPointer)} loader=${baseLoader?.javaClass?.name}"
+            )
+            return memoryPointer
+        }
+        if (memoryPointer != 0L) nativeRelease(memoryPointer)
+        if (loaderChanged) releaseBecauseLoaderChanged.set(true)
+        openedWithLoader = loader
+        if (apkPointer != 0L && apkHits > 0) {
+            apkSeesHost.set(true)
+            return apkPointer
+        }
+        if (fallbackFailureLogged.compareAndSet(false, true)) {
+            val apkDex = if (apkPointer != 0L) runCatching { nativeGetDexNum(apkPointer) }.getOrDefault(-1) else 0
+            reportFallback(
+                onMemoryFallback,
+                "APK 与 ClassLoader DexKit 都未读到 MicroMsg.MMKernel: apkDex=$apkDex apkHits=$apkHits memoryHits=$memoryHits memoryError=$memoryError"
+            )
+        }
+        if (apkPointer != 0L) return apkPointer
+        return nativeInitDexKit(path)
+    }
+
+    private fun reportFallback(onMemoryFallback: Consumer<String>?, message: String) {
+        if (onMemoryFallback == null) return
+        try {
+            onMemoryFallback.accept(message)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun hostClassHits(pointer: Long): Int {
+        if (pointer == 0L || nativeGetDexNum(pointer) <= 0) return 0
+        val findClass = FindClass()
+        val matcher = ClassMatcher()
+        matcher.usingStrings(listOf(HOST_CANARY))
+        findClass.matcher(matcher)
+        val bytes = nativeFindClass(pointer, findClass.serializedBytes())
+        if (bytes.isEmpty()) return 0
+        val holder = InnerClassMetaArrayHolder.getRootAsClassMetaArrayHolder(ByteBuffer.wrap(bytes))
+        return holder.classesLength
+    }
+
+    private fun baseDexClassLoader(loader: ClassLoader?): ClassLoader? {
+        val base = try {
+            Class.forName("dalvik.system.BaseDexClassLoader")
+        } catch (_: ClassNotFoundException) {
+            return null
+        }
+        var current = loader
+        while (current != null) {
+            if (base.isInstance(current)) return current
+            current = current.parent
+        }
+        return null
     }
 
     private constructor(apkPath: String) {
@@ -644,11 +781,29 @@ class DexKitBridge : Closeable {
     }
 
     companion object {
+        private const val HOST_CANARY = "MicroMsg.MMKernel"
+
         /** Hchat 托管入口：保持原 API 可用；真正查询时才加载，空闲后自动释放。 */
         @JvmStatic
         @JvmOverloads
         fun createManaged(apkPath: String, idleTimeoutMillis: Long, onIdleRelease: Runnable? = null): DexKitBridge {
-            return DexKitBridge(apkPath, idleTimeoutMillis, onIdleRelease)
+            return createManaged(apkPath, null, idleTimeoutMillis, null, onIdleRelease)
+        }
+
+        /**
+         * APK 内 DEX 读不到微信锚点时，用 [classLoader] 的内存 dex 继续查询。
+         * 内存 dex 命中后 native 实例保持驻留，不再按空闲时间释放。
+         */
+        @JvmStatic
+        @JvmOverloads
+        fun createManaged(
+            apkPath: String,
+            classLoader: ClassLoader?,
+            idleTimeoutMillis: Long,
+            onMemoryFallback: Consumer<String>? = null,
+            onIdleRelease: Runnable? = null
+        ): DexKitBridge {
+            return DexKitBridge(apkPath, classLoader, idleTimeoutMillis, onMemoryFallback, onIdleRelease)
         }
 
         /**
